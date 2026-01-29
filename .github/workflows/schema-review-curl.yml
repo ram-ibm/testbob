@@ -1,0 +1,336 @@
+name: Schema Review (Direct API with curl)
+
+on:
+  pull_request:
+    paths:
+      - '**.sql'
+      - '**.ddl'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  schema-review:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history to compare changes
+      
+      - name: Get changed SQL files
+        id: changed-files
+        run: |
+          echo "🔍 Detecting changed SQL files in this PR..."
+          
+          # Get list of changed SQL/DDL files
+          git diff --name-only origin/${{ github.base_ref }}...HEAD | \
+            grep -E '\.(sql|ddl)$' > changed_files.txt || true
+          
+          if [ -s changed_files.txt ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "✅ Found changed SQL files:"
+            cat changed_files.txt
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "ℹ️  No SQL files changed in this PR"
+          fi
+      
+      - name: Review each SQL file with Bob AI
+        if: steps.changed-files.outputs.found == 'true'
+        env:
+          BOB_API_KEY: ${{ secrets.BOB_API_KEY }}
+        run: |
+          echo "🤖 Reviewing SQL files with Bob AI API..."
+          
+          # Create directory for reviews
+          mkdir -p reviews
+          
+          # Counter for issues
+          TOTAL_CRITICAL=0
+          TOTAL_WARNINGS=0
+          
+          # Process each changed file
+          while IFS= read -r sql_file; do
+            echo ""
+            echo "📄 Reviewing: $sql_file"
+            echo "================================"
+            
+            # Check if file exists (it should, since we just checked it out)
+            if [ ! -f "$sql_file" ]; then
+              echo "⚠️  File not found: $sql_file (might have been deleted)"
+              continue
+            fi
+            
+            # Read the SQL file content
+            SQL_CONTENT=$(cat "$sql_file")
+            
+            # Build the review prompt
+            PROMPT="You are an expert PostgreSQL schema reviewer.
+
+Review this SQL file against ISV Schema Review Guidelines:
+
+**File:** $sql_file
+
+**SQL Content:**
+\`\`\`sql
+$SQL_CONTENT
+\`\`\`
+
+**Check for:**
+1. Primary key must start with tenant_id (or partition_id, tenant_id if partitioned)
+2. Use TIMESTAMPTZ for all timestamp fields (not TIMESTAMP)
+3. Tables must have 'created' and 'last_modified' TIMESTAMPTZ fields
+4. No foreign key constraints (application handles referential integrity)
+5. Use TEXT instead of VARCHAR or CHAR
+6. No LISTEN/NOTIFY usage
+7. Meaningful table and column names
+8. Comments on tables and columns
+9. Clustering index specified
+
+**Output Format:**
+Generate a detailed markdown report with:
+
+## 📄 File: \`$sql_file\`
+
+### ❌ Critical Issues (count)
+For each critical issue:
+- **Line X:** Description
+- **Current:** \`problematic code\`
+- **Fix:** \`corrected code\`
+- **Why:** Explanation
+
+### ⚠️ Warnings (count)
+For each warning:
+- **Line X:** Description
+- **Suggestion:** Recommendation
+
+### ✅ Passed Checks (count)
+List checks that passed
+
+### Summary
+- Critical: X 🔴
+- Warnings: X 🟡
+- Status: BLOCKED/NEEDS_REVIEW/APPROVED"
+            
+            # Escape the prompt for JSON
+            PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
+            
+            # Call Bob AI API
+            echo "🔄 Calling Bob AI API..."
+            
+            HTTP_CODE=$(curl -w "%{http_code}" -o "reviews/${sql_file//\//_}_response.json" \
+              -X POST "https://api.bob.ai/v1/chat/completions" \
+              -H "Authorization: Bearer $BOB_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"model\": \"bob-ai-latest\",
+                \"messages\": [
+                  {
+                    \"role\": \"system\",
+                    \"content\": \"You are an expert PostgreSQL schema reviewer specializing in multi-tenant SaaS applications.\"
+                  },
+                  {
+                    \"role\": \"user\",
+                    \"content\": $PROMPT_JSON
+                  }
+                ],
+                \"temperature\": 0.3,
+                \"max_tokens\": 4000
+              }")
+            
+            # Check if API call was successful
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              echo "✅ API call successful"
+              
+              # Extract the review from the response
+              jq -r '.choices[0].message.content' "reviews/${sql_file//\//_}_response.json" > "reviews/${sql_file//\//_}_review.md"
+              
+              # Count issues (simple grep-based counting)
+              CRITICAL=$(grep -c "❌ Critical Issues" "reviews/${sql_file//\//_}_review.md" || echo 0)
+              WARNINGS=$(grep -c "⚠️ Warnings" "reviews/${sql_file//\//_}_review.md" || echo 0)
+              
+              TOTAL_CRITICAL=$((TOTAL_CRITICAL + CRITICAL))
+              TOTAL_WARNINGS=$((TOTAL_WARNINGS + WARNINGS))
+              
+              echo "   Critical issues: $CRITICAL"
+              echo "   Warnings: $WARNINGS"
+            else
+              echo "❌ API call failed with HTTP code: $HTTP_CODE"
+              echo "Response:"
+              cat "reviews/${sql_file//\//_}_response.json"
+              
+              # Create a fallback review
+              cat > "reviews/${sql_file//\//_}_review.md" << EOF
+## 📄 File: \`$sql_file\`
+
+⚠️ **API Error:** Unable to complete review (HTTP $HTTP_CODE)
+
+Please review this file manually or try again later.
+EOF
+            fi
+            
+          done < changed_files.txt
+          
+          # Save totals for next step
+          echo "TOTAL_CRITICAL=$TOTAL_CRITICAL" >> $GITHUB_ENV
+          echo "TOTAL_WARNINGS=$TOTAL_WARNINGS" >> $GITHUB_ENV
+          
+          echo ""
+          echo "================================"
+          echo "📊 Review Summary"
+          echo "================================"
+          echo "Total Critical Issues: $TOTAL_CRITICAL"
+          echo "Total Warnings: $TOTAL_WARNINGS"
+      
+      - name: Generate combined report
+        if: steps.changed-files.outputs.found == 'true'
+        run: |
+          echo "📝 Generating combined report..."
+          
+          # Start the report
+          cat > combined_review.md << 'HEADER'
+## 🤖 Bob AI Schema Review
+
+**PR:** #${{ github.event.pull_request.number }}
+**Branch:** ${{ github.head_ref }}
+**Author:** @${{ github.event.pull_request.user.login }}
+
+---
+
+HEADER
+          
+          # Append each individual review
+          for review_file in reviews/*_review.md; do
+            if [ -f "$review_file" ]; then
+              cat "$review_file" >> combined_review.md
+              echo "" >> combined_review.md
+              echo "---" >> combined_review.md
+              echo "" >> combined_review.md
+            fi
+          done
+          
+          # Add overall summary
+          cat >> combined_review.md << SUMMARY
+          
+### 📊 Overall Summary
+
+| Metric | Count |
+|--------|-------|
+| Files Reviewed | $(wc -l < changed_files.txt) |
+| Critical Issues | ${TOTAL_CRITICAL} 🔴 |
+| Warnings | ${TOTAL_WARNINGS} 🟡 |
+
+SUMMARY
+          
+          # Add status
+          if [ ${TOTAL_CRITICAL} -gt 0 ]; then
+            echo "" >> combined_review.md
+            echo "**Status:** ⛔ **BLOCKED** - Critical issues must be resolved before merge" >> combined_review.md
+            echo "REVIEW_STATUS=blocked" >> $GITHUB_ENV
+          elif [ ${TOTAL_WARNINGS} -gt 0 ]; then
+            echo "" >> combined_review.md
+            echo "**Status:** ⚠️ **NEEDS REVIEW** - Please address warnings before merge" >> combined_review.md
+            echo "REVIEW_STATUS=warning" >> $GITHUB_ENV
+          else
+            echo "" >> combined_review.md
+            echo "**Status:** ✅ **APPROVED** - No issues found" >> combined_review.md
+            echo "REVIEW_STATUS=approved" >> $GITHUB_ENV
+          fi
+          
+          # Add footer
+          cat >> combined_review.md << 'FOOTER'
+
+---
+
+*Reviewed by Bob AI Schema Reviewer (Direct API)*
+*Guidelines: [ISV Schema Reviews](./ISV-Schema-Reviews.rtf)*
+FOOTER
+          
+          echo "✅ Combined report generated"
+      
+      - name: Post review comment to PR
+        if: steps.changed-files.outputs.found == 'true'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('combined_review.md', 'utf8');
+            
+            // Find existing bot comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            
+            const botComment = comments.data.find(comment => 
+              comment.user.type === 'Bot' && 
+              comment.body.includes('🤖 Bob AI Schema Review')
+            );
+            
+            if (botComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: report
+              });
+              console.log('✅ Updated existing review comment');
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: report
+              });
+              console.log('✅ Created new review comment');
+            }
+      
+      - name: Upload review artifacts
+        if: steps.changed-files.outputs.found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-review-reports
+          path: |
+            combined_review.md
+            reviews/
+          retention-days: 30
+      
+      - name: Fail if critical issues found
+        if: steps.changed-files.outputs.found == 'true' && env.REVIEW_STATUS == 'blocked'
+        run: |
+          echo ""
+          echo "❌ ================================"
+          echo "❌ SCHEMA REVIEW FAILED"
+          echo "❌ ================================"
+          echo ""
+          echo "Critical issues found: ${TOTAL_CRITICAL}"
+          echo "Warnings found: ${TOTAL_WARNINGS}"
+          echo ""
+          echo "Please review the PR comments for details and fix the issues."
+          echo ""
+          exit 1
+      
+      - name: Success message
+        if: steps.changed-files.outputs.found == 'true' && env.REVIEW_STATUS != 'blocked'
+        run: |
+          echo ""
+          echo "✅ ================================"
+          echo "✅ SCHEMA REVIEW PASSED"
+          echo "✅ ================================"
+          echo ""
+          if [ "$REVIEW_STATUS" = "warning" ]; then
+            echo "⚠️  Warnings found: ${TOTAL_WARNINGS}"
+            echo "Consider addressing these before merge"
+          else
+            echo "No issues found!"
+          fi
+          echo ""
+
+# Made with Bob
