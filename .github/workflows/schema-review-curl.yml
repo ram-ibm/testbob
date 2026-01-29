@@ -67,11 +67,9 @@ jobs:
             # Read the SQL file content
             SQL_CONTENT=$(cat "$sql_file")
             
-            # Build a simple review prompt
-            PROMPT="You are an expert PostgreSQL schema reviewer. Review this SQL file: $sql_file
-
-SQL Content:
-$SQL_CONTENT
+            # Build review prompt using a temp file to avoid YAML issues
+            cat > prompt_temp.txt <<'EOF'
+You are an expert PostgreSQL schema reviewer. Review this SQL file.
 
 Check for:
 1. Primary key must start with tenant_id
@@ -82,10 +80,16 @@ Check for:
 6. No LISTEN/NOTIFY usage
 7. Meaningful names and comments
 
-Provide a detailed markdown report with critical issues, warnings, and passed checks."
+Provide a detailed markdown report with critical issues, warnings, and passed checks.
+
+SQL Content:
+EOF
+            
+            # Append SQL content to prompt
+            cat "$sql_file" >> prompt_temp.txt
             
             # Escape the prompt for JSON
-            PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
+            PROMPT_JSON=$(cat prompt_temp.txt | jq -Rs .)
             
             # Call Bob AI API
             echo "🔄 Calling Bob AI API..."
