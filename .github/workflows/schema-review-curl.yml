@@ -41,8 +41,21 @@ jobs:
             SQL_CONTENT=$(cat "$sql_file")
             PROMPT="Review this PostgreSQL schema file against ISV guidelines. Check for: tenant_id in primary key, TIMESTAMPTZ for timestamps, created and last_modified fields, no foreign keys, TEXT instead of VARCHAR. File: $sql_file. SQL: $SQL_CONTENT"
             PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
-            curl -X POST "https://us-south.ml.cloud.ibm.com/v1/chat/completions" -H "Authorization: Bearer $BOB_API_KEY" -H "Content-Type: application/json" -d "{\"model\":\"bob-ai-latest\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a PostgreSQL schema reviewer.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"temperature\":0.3}" -o "reviews/$(basename $sql_file)-review.json"
-            jq -r '.choices[0].message.content' "reviews/$(basename $sql_file)-review.json" > "reviews/$(basename $sql_file)-review.md"
+            
+            HTTP_CODE=$(curl -w "%{http_code}" -o "reviews/$(basename $sql_file)-response.json" \
+              -X POST "https://us-south.ml.cloud.ibm.com/ml/v1/text/generation?version=2023-05-29" \
+              -H "Authorization: Bearer $BOB_API_KEY" \
+              -H "Content-Type: application/json" \
+              -d "{\"model_id\":\"ibm/granite-13b-chat-v2\",\"input\":$PROMPT_JSON,\"parameters\":{\"max_new_tokens\":2000,\"temperature\":0.3}}")
+            
+            echo "HTTP Status: $HTTP_CODE"
+            cat "reviews/$(basename $sql_file)-response.json"
+            
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              jq -r '.results[0].generated_text' "reviews/$(basename $sql_file)-response.json" > "reviews/$(basename $sql_file)-review.md" 2>/dev/null || echo "API returned success but unexpected format" > "reviews/$(basename $sql_file)-review.md"
+            else
+              echo "API Error (HTTP $HTTP_CODE)" > "reviews/$(basename $sql_file)-review.md"
+            fi
           done < changed_files.txt
       
       - name: Post review to PR
