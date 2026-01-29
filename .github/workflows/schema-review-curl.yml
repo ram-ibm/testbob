@@ -68,16 +68,17 @@ jobs:
             SQL_CONTENT=$(cat "$sql_file")
             
             # Build the review prompt
-            PROMPT="You are an expert PostgreSQL schema reviewer.
+            cat > prompt.txt << 'PROMPT_EOF'
+You are an expert PostgreSQL schema reviewer.
 
 Review this SQL file against ISV Schema Review Guidelines:
 
-**File:** $sql_file
+**File:** FILENAME_PLACEHOLDER
 
 **SQL Content:**
-\`\`\`sql
-$SQL_CONTENT
-\`\`\`
+```sql
+SQL_CONTENT_PLACEHOLDER
+```
 
 **Check for:**
 1. Primary key must start with tenant_id (or partition_id, tenant_id if partitioned)
@@ -93,13 +94,13 @@ $SQL_CONTENT
 **Output Format:**
 Generate a detailed markdown report with:
 
-## 📄 File: \`$sql_file\`
+## 📄 File: `FILENAME_PLACEHOLDER`
 
 ### ❌ Critical Issues (count)
 For each critical issue:
 - **Line X:** Description
-- **Current:** \`problematic code\`
-- **Fix:** \`corrected code\`
+- **Current:** `problematic code`
+- **Fix:** `corrected code`
 - **Why:** Explanation
 
 ### ⚠️ Warnings (count)
@@ -113,7 +114,14 @@ List checks that passed
 ### Summary
 - Critical: X 🔴
 - Warnings: X 🟡
-- Status: BLOCKED/NEEDS_REVIEW/APPROVED"
+- Status: BLOCKED/NEEDS_REVIEW/APPROVED
+PROMPT_EOF
+            
+            # Replace placeholders
+            sed -i "s|FILENAME_PLACEHOLDER|$sql_file|g" prompt.txt
+            sed -i "s|SQL_CONTENT_PLACEHOLDER|$(cat "$sql_file" | sed 's/|/\\|/g')|g" prompt.txt
+            
+            PROMPT=$(cat prompt.txt)
             
             # Escape the prompt for JSON
             PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
