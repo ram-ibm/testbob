@@ -68,27 +68,13 @@ jobs:
             SQL_CONTENT=$(cat "$sql_file")
             
             # Build review prompt using a temp file to avoid YAML issues
-            cat > prompt_temp.txt <<'EOF'
+            cat > prompt_temp.txt <<EOF
 You are an expert PostgreSQL schema reviewer. Review this SQL file.
-
-Check for:
-1. Primary key must start with tenant_id
-2. Use TIMESTAMPTZ for timestamps (not TIMESTAMP)
-3. Tables must have created and last_modified TIMESTAMPTZ fields
-4. No foreign key constraints
-5. Use TEXT instead of VARCHAR
-6. No LISTEN/NOTIFY usage
-7. Meaningful names and comments
-
+Check for: 1) Primary key must start with tenant_id, 2) Use TIMESTAMPTZ for timestamps, 3) Tables must have created and last_modified TIMESTAMPTZ fields, 4) No foreign key constraints, 5) Use TEXT instead of VARCHAR, 6) No LISTEN/NOTIFY usage, 7) Meaningful names and comments.
 Provide a detailed markdown report with critical issues, warnings, and passed checks.
-
 SQL Content:
 EOF
-            
-            # Append SQL content to prompt
             cat "$sql_file" >> prompt_temp.txt
-            
-            # Escape the prompt for JSON
             PROMPT_JSON=$(cat prompt_temp.txt | jq -Rs .)
             
             # Call Bob AI API
