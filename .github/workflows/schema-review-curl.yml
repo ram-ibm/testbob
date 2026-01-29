@@ -67,61 +67,22 @@ jobs:
             # Read the SQL file content
             SQL_CONTENT=$(cat "$sql_file")
             
-            # Build the review prompt
-            cat > prompt.txt << 'PROMPT_EOF'
-You are an expert PostgreSQL schema reviewer.
+            # Build a simple review prompt
+            PROMPT="You are an expert PostgreSQL schema reviewer. Review this SQL file: $sql_file
 
-Review this SQL file against ISV Schema Review Guidelines:
+SQL Content:
+$SQL_CONTENT
 
-**File:** FILENAME_PLACEHOLDER
-
-**SQL Content:**
-```sql
-SQL_CONTENT_PLACEHOLDER
-```
-
-**Check for:**
-1. Primary key must start with tenant_id (or partition_id, tenant_id if partitioned)
-2. Use TIMESTAMPTZ for all timestamp fields (not TIMESTAMP)
-3. Tables must have 'created' and 'last_modified' TIMESTAMPTZ fields
-4. No foreign key constraints (application handles referential integrity)
-5. Use TEXT instead of VARCHAR or CHAR
+Check for:
+1. Primary key must start with tenant_id
+2. Use TIMESTAMPTZ for timestamps (not TIMESTAMP)
+3. Tables must have created and last_modified TIMESTAMPTZ fields
+4. No foreign key constraints
+5. Use TEXT instead of VARCHAR
 6. No LISTEN/NOTIFY usage
-7. Meaningful table and column names
-8. Comments on tables and columns
-9. Clustering index specified
+7. Meaningful names and comments
 
-**Output Format:**
-Generate a detailed markdown report with:
-
-## 📄 File: `FILENAME_PLACEHOLDER`
-
-### ❌ Critical Issues (count)
-For each critical issue:
-- **Line X:** Description
-- **Current:** `problematic code`
-- **Fix:** `corrected code`
-- **Why:** Explanation
-
-### ⚠️ Warnings (count)
-For each warning:
-- **Line X:** Description
-- **Suggestion:** Recommendation
-
-### ✅ Passed Checks (count)
-List checks that passed
-
-### Summary
-- Critical: X 🔴
-- Warnings: X 🟡
-- Status: BLOCKED/NEEDS_REVIEW/APPROVED
-PROMPT_EOF
-            
-            # Replace placeholders
-            sed -i "s|FILENAME_PLACEHOLDER|$sql_file|g" prompt.txt
-            sed -i "s|SQL_CONTENT_PLACEHOLDER|$(cat "$sql_file" | sed 's/|/\\|/g')|g" prompt.txt
-            
-            PROMPT=$(cat prompt.txt)
+Provide a detailed markdown report with critical issues, warnings, and passed checks."
             
             # Escape the prompt for JSON
             PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
@@ -199,7 +160,7 @@ EOF
           echo "📝 Generating combined report..."
           
           # Start the report
-          cat > combined_review.md << 'HEADER'
+          cat > combined_review.md << HEADER
 ## 🤖 Bob AI Schema Review
 
 **PR:** #${{ github.event.pull_request.number }}
@@ -249,7 +210,7 @@ SUMMARY
           fi
           
           # Add footer
-          cat >> combined_review.md << 'FOOTER'
+          cat >> combined_review.md << FOOTER
 
 ---
 
@@ -341,4 +302,3 @@ FOOTER
           fi
           echo ""
 
-# Made with Bob
