@@ -41,7 +41,7 @@ jobs:
             SQL_CONTENT=$(cat "$sql_file")
             PROMPT="Review this PostgreSQL schema file against ISV guidelines. Check for: tenant_id in primary key, TIMESTAMPTZ for timestamps, created and last_modified fields, no foreign keys, TEXT instead of VARCHAR. File: $sql_file. SQL: $SQL_CONTENT"
             PROMPT_JSON=$(echo "$PROMPT" | jq -Rs .)
-            curl -X POST "https://api.bob.ai/v1/chat/completions" -H "Authorization: Bearer $BOB_API_KEY" -H "Content-Type: application/json" -d "{\"model\":\"bob-ai-latest\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a PostgreSQL schema reviewer.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"temperature\":0.3}" -o "reviews/$(basename $sql_file)-review.json"
+            curl -X POST "https://us-south.ml.cloud.ibm.com/v1/chat/completions" -H "Authorization: Bearer $BOB_API_KEY" -H "Content-Type: application/json" -d "{\"model\":\"bob-ai-latest\",\"messages\":[{\"role\":\"system\",\"content\":\"You are a PostgreSQL schema reviewer.\"},{\"role\":\"user\",\"content\":$PROMPT_JSON}],\"temperature\":0.3}" -o "reviews/$(basename $sql_file)-review.json"
             jq -r '.choices[0].message.content' "reviews/$(basename $sql_file)-review.json" > "reviews/$(basename $sql_file)-review.md"
           done < changed_files.txt
       
